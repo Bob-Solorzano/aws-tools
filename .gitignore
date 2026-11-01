@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyCharm
+.idea/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.aws/
