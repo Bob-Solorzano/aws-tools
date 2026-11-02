@@ -185,9 +185,58 @@ def permission_sources(permission):
 
     return sources or ["source not returned"]
 
+def route_matches_ip(route, address):
+    """Return the matching destination prefix for an AWS route, if any."""
+    address = ipaddress.ip_address(address)
+    for key in ("DestinationCidrBlock", "DestinationIpv6CidrBlock"):
+        cidr = route.get(key)
+        if cidr:
+            network = ipaddress.ip_network(cidr, strict=False)
+            if network.version == address.version and address in network:
+                return network
+    return None
+
+def route_target(route):
+    target_fields = (
+        ("GatewayId", "gateway"),
+        ("NatGatewayId", "NAT gateway"),
+        ("TransitGatewayId", "transit gateway"),
+        ("VpcPeeringConnectionId", "VPC peering"),
+        ("NetworkInterfaceId", "network interface"),
+        ("InstanceId", "instance"),
+        ("EgressOnlyInternetGatewayId", "egress-only internet gateway"),
+        ("VpcEndpointId", "VPC endpoint"),
+        ("CarrierGatewayId", "carrier gateway"),
+        ("LocalGatewayId", "local gateway"),
+        ("CoreNetworkArn", "core network"),
+    )
+    for field, label in target_fields:
+        if route.get(field):
+            value = route[field]
+            if field == "GatewayId" and value == "local":
+                return "local VPC route"
+            return f"{label} {value}"
+    return "target not returned"
+
+def matching_routes(routes, address):
+    matches = [
+        (route_matches_ip(route, address), route)
+        for route in routes
+    ]
+    matches = [(prefix, route) for prefix, route in matches if prefix]
+    if not matches:
+        return []
+    longest = max(prefix.prefixlen for prefix, _ in matches)
+    return [
+        (prefix, route)
+        for prefix, route in matches
+        if prefix.prefixlen == longest
+    ]
+
 def main():
     args = parse_args()
     elbv2 = boto3.client("elbv2", region_name=args.region)
+    ec2 = boto3.client("ec2", region_name=args.region)
 
     lookup = (
         {"LoadBalancerArns": [args.load_balancer]}
@@ -284,7 +333,6 @@ def main():
     if not instance_ids:
         print("  No EC2 instance targets found.")
     else:
-        ec2 = boto3.client("ec2", region_name=args.region)
         response = ec2.describe_instance_status(
             InstanceIds=sorted(instance_ids),
             IncludeAllInstances=True,
@@ -625,6 +673,145 @@ def main():
                                 f"rule {blocking_rule['RuleNumber']} "
                                 f"at port {detail}"
                             )
+
+    route_table_response = ec2.describe_route_tables(
+        Filters=[{"Name": "vpc-id", "Values": [load_balancer["VpcId"]]}]
+    )
+    route_tables = route_table_response.get("RouteTables", [])
+    route_table_by_id = {table["RouteTableId"]: table for table in route_tables}
+    route_table_by_subnet = {}
+    main_route_table_id = None
+
+    for table in route_tables:
+        for association in table.get("Associations", []):
+            subnet_id = association.get("SubnetId")
+            if subnet_id:
+                route_table_by_subnet[subnet_id] = table
+            if association.get("Main"):
+                main_route_table_id = table["RouteTableId"]
+
+    for subnet_id in subnet_context:
+        if subnet_id not in route_table_by_subnet and main_route_table_id:
+            route_table_by_subnet[subnet_id] = route_table_by_id[
+                main_route_table_id
+            ]
+
+    print("\nRoute tables and gateway routes:")
+    for subnet_id in sorted(subnet_context):
+        roles = ", ".join(sorted(set(subnet_context[subnet_id])))
+        table = route_table_by_subnet.get(subnet_id)
+        print(f"  Subnet {subnet_id} ({roles})")
+        if not table:
+            print("    No route table returned.")
+            continue
+
+        print(f"    Route table: {table['RouteTableId']}")
+        routes = sorted(
+            table.get("Routes", []),
+            key=lambda route: (
+                route.get("DestinationCidrBlock")
+                or route.get("DestinationIpv6CidrBlock")
+                or route.get("DestinationPrefixListId", "")
+            ),
+        )
+        for route in routes:
+            destination = (
+                route.get("DestinationCidrBlock")
+                or route.get("DestinationIpv6CidrBlock")
+                or route.get("DestinationPrefixListId")
+                or "unknown destination"
+            )
+            state = route.get("State", "unknown")
+            print(
+                f"      {destination} -> {route_target(route)} ({state})"
+            )
+
+    print("\nRoute path to targets:")
+    if not alb_private_ips_by_subnet or not target_ports_by_instance:
+        print("  ALB node or EC2 target addresses unavailable.")
+    else:
+        for instance_id in sorted(target_ports_by_instance):
+            target_ip = instance_private_ips.get(instance_id)
+            target_table = route_table_by_subnet.get(
+                instance_subnet_ids.get(instance_id)
+            )
+            if not target_ip or not target_table:
+                print(f"  {instance_id}: target IP or route table unavailable.")
+                continue
+
+            for alb_subnet_id, alb_ips in sorted(
+                alb_private_ips_by_subnet.items()
+            ):
+                alb_table = route_table_by_subnet.get(alb_subnet_id)
+                if not alb_table:
+                    print(f"  {alb_subnet_id}: route table unavailable.")
+                    continue
+
+                for alb_ip in sorted(alb_ips):
+                    for label, table, address in (
+                        ("ALB to target", alb_table, target_ip),
+                        ("Target return to ALB", target_table, alb_ip),
+                    ):
+                        candidates = matching_routes(
+                            table.get("Routes", []), address
+                        )
+                        if not candidates:
+                            print(
+                                f"  {label}: no matching route for {address} "
+                                f"in {table['RouteTableId']}"
+                            )
+                            continue
+                        for prefix, route in candidates:
+                            print(
+                                f"  {label} ({alb_ip} <-> {target_ip}): "
+                                f"{prefix} -> {route_target(route)} "
+                                f"({route.get('State', 'unknown')})"
+                            )
+
+    if load_balancer.get("Scheme") == "internet-facing":
+        print("\nInternet-facing ALB gateway check:")
+        igw_response = ec2.describe_internet_gateways(
+            Filters=[
+                {
+                    "Name": "attachment.vpc-id",
+                    "Values": [load_balancer["VpcId"]],
+                }
+            ]
+        )
+        attached_igw_ids = {
+            gateway["InternetGatewayId"]
+            for gateway in igw_response.get("InternetGateways", [])
+        }
+        for subnet_id in sorted(alb_subnet_ids):
+            table = route_table_by_subnet.get(subnet_id)
+            default_routes = [
+                route
+                for route in (table or {}).get("Routes", [])
+                if route.get("DestinationCidrBlock") == "0.0.0.0/0"
+                or route.get("DestinationIpv6CidrBlock") == "::/0"
+            ]
+            usable_igw = [
+                route
+                for route in default_routes
+                if route.get("GatewayId", "").startswith("igw-")
+                and route.get("State") == "active"
+                and route.get("GatewayId") in attached_igw_ids
+            ]
+            if usable_igw:
+                route = usable_igw[0]
+                destination = (
+                    route.get("DestinationCidrBlock")
+                    or route.get("DestinationIpv6CidrBlock")
+                )
+                print(
+                    f"  {subnet_id}: active {destination} route through "
+                    f"attached {route['GatewayId']}"
+                )
+            else:
+                print(
+                    f"  {subnet_id}: no active default route through an "
+                    "internet gateway attached to this VPC"
+                )
 
     return 0
 

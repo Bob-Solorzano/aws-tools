@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alb-troubleshooter"
 version = "0.1.0"
-description = "Read-only diagnostics for AWS VPC traffipaths from an ALB to an application"
+description = "Read-only diagnostics for AWS VPC traffic paths from an ALB to an application"
 requires-python = ">=3.10"
 dependencies = [
     "boto3>=1.34",
