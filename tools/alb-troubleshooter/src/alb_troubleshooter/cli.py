@@ -23,6 +23,7 @@ def parse_args():
     return parser.parse_args()
 
 def permission_allows_tcp_port(permission, port):
+    """Check whether an EC2 security-group permission covers a TCP port."""
     protocol = permission.get("IpProtocol")
 
     if protocol == "-1":
@@ -43,6 +44,11 @@ def permission_allows_tcp_port(permission, port):
 def egress_permission_allows_target(
     permission, port, target_security_group_ids, target_private_ip
 ):
+    """Match ALB egress by target SG reference or target IPv4 address.
+
+    Prefix-list destinations are not expanded, so they are intentionally not
+    treated as a confirmed match here.
+    """
     if not permission_allows_tcp_port(permission, port):
         return False
 
@@ -63,6 +69,7 @@ def egress_permission_allows_target(
     )
 
 def format_nacl_rule(rule):
+    """Render one NACL entry in a compact, human-readable form."""
     protocol = {
         "-1": "ALL",
         "6": "TCP",
@@ -88,6 +95,11 @@ def format_nacl_rule(rule):
     )
 
 def first_matching_nacl_rule(nacl, egress, peer_ip, protocol, port):
+    """Return the first NACL entry matching direction, peer, protocol, port.
+
+    NACLs are stateless and use the lowest matching rule number first. AWS's
+    implicit deny applies when no configured entry matches.
+    """
     peer_address = ipaddress.ip_address(peer_ip)
 
     for rule in sorted(nacl["Entries"], key=lambda item: item["RuleNumber"]):
@@ -121,6 +133,11 @@ def first_matching_nacl_rule(nacl, egress, peer_ip, protocol, port):
 
 
 def evaluate_nacl_port_range(nacl, egress, peer_ip, protocol, start, end):
+    """Evaluate every port in a range without looping over all 65K ports.
+
+    Split the range at matching rule boundaries, then check one representative
+    port per segment; the first-match result is constant within each segment.
+    """
     boundaries = {start, end + 1}
     peer_address = ipaddress.ip_address(peer_ip)
 
@@ -164,6 +181,7 @@ def evaluate_nacl_port_range(nacl, egress, peer_ip, protocol, start, end):
     return True, sorted(used_rule_numbers), None
 
 def permission_sources(permission):
+    """Describe the source kinds attached to an ingress permission."""
     sources = []
 
     sources.extend(
@@ -197,6 +215,7 @@ def route_matches_ip(route, address):
     return None
 
 def route_target(route):
+    """Return the next-hop field populated on a VPC route."""
     target_fields = (
         ("GatewayId", "gateway"),
         ("NatGatewayId", "NAT gateway"),
@@ -219,6 +238,11 @@ def route_target(route):
     return "target not returned"
 
 def matching_routes(routes, address):
+    """Return routes with the most-specific CIDR matching an IP address.
+
+    Equal-length candidates are all returned; prefix-list destinations need
+    separate expansion and are not included in this IP-based lookup.
+    """
     matches = [
         (route_matches_ip(route, address), route)
         for route in routes
@@ -244,6 +268,8 @@ def main():
         else {"Names": [args.load_balancer]}
     )
 
+    # Resolve the ALB and its listeners first. A listener can forward directly
+    # to one target group or use a weighted ForwardConfig with several groups.
     try:
         response = elbv2.describe_load_balancers(**lookup)
         load_balancer = response["LoadBalancers"][0]
@@ -293,6 +319,8 @@ def main():
             target_group_arns.add(arn)
             print(f"    forwards to: {arn}")
 
+    # Target health is separate from EC2 health. Keep both views because an
+    # instance can be running while its application target fails health checks.
     instance_ids = set()
     target_ports_by_instance = {}
 
@@ -329,6 +357,8 @@ def main():
                     f"{f' — {detail}' if detail else ''}"
                 )
 
+    # EC2 status checks report host and instance health; they do not inspect
+    # in-guest application services such as httpd or nginx.
     print("\nEC2 instance status:")
     if not instance_ids:
         print("  No EC2 instance targets found.")
@@ -357,6 +387,8 @@ def main():
             print(f"    System check:   {system_status}")
             print(f"    Instance check: {instance_status}")
 
+    # Security groups are stateful. These checks inspect the configured ingress
+    # and egress rules relevant to each listener and registered target port.
     print("\nSecurity groups:")
 
     alb_security_group_ids = set(load_balancer.get("SecurityGroups", []))
@@ -504,6 +536,8 @@ def main():
                 f"EC2 target {instance_id}"
             )
 
+    # ALB node ENIs are identified by the service-generated description. Their
+    # private IPs let the NACL and route checks trace each subnet pair.
     alb_id = load_balancer["LoadBalancerArn"].split("/")[-1]
     alb_description = (
         f"ELB app/{load_balancer['LoadBalancerName']}/{alb_id}"
@@ -581,6 +615,8 @@ def main():
             for rule in rules:
                 print(f"      {format_nacl_rule(rule)}")
 
+    # NACLs are stateless: check the forward target port and the return traffic
+    # on ephemeral ports separately for every ALB-node/target combination.
     print("\nNACL traffic path:")
     ephemeral_start = 1024
     ephemeral_end = 65535
@@ -674,6 +710,9 @@ def main():
                                 f"at port {detail}"
                             )
 
+    # Use explicit subnet associations where present; otherwise a subnet uses
+    # the VPC's main route table. Print all routes so gateway next hops are
+    # visible, then evaluate the most-specific CIDR route for each peer IP.
     route_table_response = ec2.describe_route_tables(
         Filters=[{"Name": "vpc-id", "Values": [load_balancer["VpcId"]]}]
     )
@@ -768,6 +807,8 @@ def main():
                                 f"({route.get('State', 'unknown')})"
                             )
 
+    # An internet-facing ALB needs an active default route through an IGW
+    # attached to its VPC in each ALB subnet.
     if load_balancer.get("Scheme") == "internet-facing":
         print("\nInternet-facing ALB gateway check:")
         igw_response = ec2.describe_internet_gateways(
