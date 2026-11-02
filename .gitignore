@@ -12,3 +12,4 @@ venv/
 .env.*
 !.env.example
 .aws/
+*.egg-info/
