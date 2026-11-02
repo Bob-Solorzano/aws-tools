@@ -33,10 +33,14 @@ python -m pip install -e .
 ## Run
 
 ```powershell
-alb-troubleshooter --load-balancer dev-web-alb --region us-west-2
+alb-troubleshooter --load-balancer sample-web-alb --region us-west-2
 ```
 
 You can provide either a load balancer name or its ARN. Credentials and region are passed to boto3; this tool does not collect or store credentials.
+
+## Example output
+
+See [sample output](examples/sample-output.txt). It uses fictional AWS identifiers and private addresses, not output from a real account.
 
 ## IAM read permissions
 

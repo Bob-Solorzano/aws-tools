@@ -1,0 +1,135 @@
+Load balancer: sample-web-alb
+ARN:           arn:aws:elasticloadbalancing:us-west-2:111122223333:loadbalancer/app/sample-web-alb/0123456789abcdef
+Type:          application
+State:         active
+DNS name:      sample-web-alb-123456789.us-west-2.elb.amazonaws.com
+VPC:           vpc-0abc123456789abcd
+Subnets:       subnet-0abc123456789abcd, subnet-0def123456789abcd
+
+Listeners:
+  HTTP :80
+    forwards to: arn:aws:elasticloadbalancing:us-west-2:111122223333:targetgroup/sample-web-tg/0123456789abcdef
+
+Target health:
+  Target group: arn:aws:elasticloadbalancing:us-west-2:111122223333:targetgroup/sample-web-tg/0123456789abcdef
+    i-0123456789abcdef0:80 healthy
+    i-0abcdef0123456789:80 healthy
+
+EC2 instance status:
+  i-0123456789abcdef0: running
+    System check:   ok
+    Instance check: ok
+  i-0abcdef0123456789: running
+    System check:   ok
+    Instance check: ok
+
+Security groups:
+  Load balancer:
+    sg-0123456789abcdef0
+  EC2 targets:
+    i-0123456789abcdef0: sg-0abcdef0123456789
+    i-0abcdef0123456789: sg-0abcdef0123456789
+
+Target ingress from ALB security group:
+  i-0123456789abcdef0:80 TCP: ALB SG reference allowed by sg-0abcdef0123456789
+  i-0abcdef0123456789:80 TCP: ALB SG reference allowed by sg-0abcdef0123456789
+
+ALB security group egress to targets:
+  i-0123456789abcdef0:80 TCP: allowed by sg-0123456789abcdef0
+  i-0abcdef0123456789:80 TCP: allowed by sg-0123456789abcdef0
+
+ALB listener ingress:
+  HTTP :80
+    sg-0123456789abcdef0 allows from IPv4 0.0.0.0/0
+
+ALB node addresses:
+  subnet-0abc123456789abcd: 10.0.1.10
+  subnet-0def123456789abcd: 10.0.2.10
+
+Network ACLs:
+  Subnet subnet-0abc123456789abcd (ALB subnet)
+    NACL: acl-0123456789abcdef0
+    Ingress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+    Egress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+  Subnet subnet-0fedcba9876543210 (EC2 target i-0abcdef0123456789)
+    NACL: acl-0123456789abcdef0
+    Ingress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+    Egress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+  Subnet subnet-0fedcba9876543211 (EC2 target i-0123456789abcdef0)
+    NACL: acl-0123456789abcdef0
+    Ingress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+    Egress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+  Subnet subnet-0def123456789abcd (ALB subnet)
+    NACL: acl-0123456789abcdef0
+    Ingress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+    Egress:
+      100 ALLOW ALL all ports 0.0.0.0/0
+      32767 DENY ALL all ports 0.0.0.0/0
+
+NACL traffic path:
+  ALB 10.0.1.10 -> i-0123456789abcdef0 (10.0.12.20):80
+    ALB subnet egress to target: ALLOW (rule 100)
+    Target subnet ingress from ALB: ALLOW (rule 100)
+    Target subnet egress return ephemeral: ALLOW (rule 100)
+    ALB subnet ingress return ephemeral: ALLOW (rule 100)
+  ALB 10.0.2.10 -> i-0123456789abcdef0 (10.0.12.20):80
+    ALB subnet egress to target: ALLOW (rule 100)
+    Target subnet ingress from ALB: ALLOW (rule 100)
+    Target subnet egress return ephemeral: ALLOW (rule 100)
+    ALB subnet ingress return ephemeral: ALLOW (rule 100)
+  ALB 10.0.1.10 -> i-0abcdef0123456789 (10.0.11.20):80
+    ALB subnet egress to target: ALLOW (rule 100)
+    Target subnet ingress from ALB: ALLOW (rule 100)
+    Target subnet egress return ephemeral: ALLOW (rule 100)
+    ALB subnet ingress return ephemeral: ALLOW (rule 100)
+  ALB 10.0.2.10 -> i-0abcdef0123456789 (10.0.11.20):80
+    ALB subnet egress to target: ALLOW (rule 100)
+    Target subnet ingress from ALB: ALLOW (rule 100)
+    Target subnet egress return ephemeral: ALLOW (rule 100)
+    ALB subnet ingress return ephemeral: ALLOW (rule 100)
+
+Route tables and gateway routes:
+  Subnet subnet-0abc123456789abcd (ALB subnet)
+    Route table: rtb-0123456789abcdef0
+      0.0.0.0/0 -> gateway igw-0123456789abcdef0 (active)
+      10.0.0.0/16 -> local VPC route (active)
+  Subnet subnet-0fedcba9876543210 (EC2 target i-0abcdef0123456789)
+    Route table: rtb-0abcdef0123456789
+      0.0.0.0/0 -> NAT gateway nat-0123456789abcdef0 (active)
+      10.0.0.0/16 -> local VPC route (active)
+  Subnet subnet-0fedcba9876543211 (EC2 target i-0123456789abcdef0)
+    Route table: rtb-0abcdef0123456789
+      0.0.0.0/0 -> NAT gateway nat-0123456789abcdef0 (active)
+      10.0.0.0/16 -> local VPC route (active)
+  Subnet subnet-0def123456789abcd (ALB subnet)
+    Route table: rtb-0123456789abcdef0
+      0.0.0.0/0 -> gateway igw-0123456789abcdef0 (active)
+      10.0.0.0/16 -> local VPC route (active)
+
+Route path to targets:
+  ALB to target (10.0.1.10 <-> 10.0.12.20): 10.0.0.0/16 -> local VPC route (active)
+  Target return to ALB (10.0.1.10 <-> 10.0.12.20): 10.0.0.0/16 -> local VPC route (active)
+  ALB to target (10.0.2.10 <-> 10.0.12.20): 10.0.0.0/16 -> local VPC route (active)
+  Target return to ALB (10.0.2.10 <-> 10.0.12.20): 10.0.0.0/16 -> local VPC route (active)
+  ALB to target (10.0.1.10 <-> 10.0.11.20): 10.0.0.0/16 -> local VPC route (active)
+  Target return to ALB (10.0.1.10 <-> 10.0.11.20): 10.0.0.0/16 -> local VPC route (active)
+  ALB to target (10.0.2.10 <-> 10.0.11.20): 10.0.0.0/16 -> local VPC route (active)
+  Target return to ALB (10.0.2.10 <-> 10.0.11.20): 10.0.0.0/16 -> local VPC route (active)
+
+Internet-facing ALB gateway check:
+  subnet-0abc123456789abcd: active 0.0.0.0/0 route through attached igw-0123456789abcdef0
+  subnet-0def123456789abcd: active 0.0.0.0/0 route through attached igw-0123456789abcdef0
